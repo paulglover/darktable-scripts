@@ -114,6 +114,47 @@ This module moves files on disk. Run it with **dry run** on first and read the
 log before committing to a real run, and make sure you have a backup of both
 your photos and `~/.config/darktable/library.db`.
 
+## select_grouped
+
+Adds **select grouped** and **select ungrouped** to the *select* module in the
+lighttable right panel.
+
+darktable's collect and filter modules only offer a fixed set of criteria, and
+group membership is not one of them — it cannot be added from Lua. This is the
+next best thing: **select grouped** selects the images of the current
+collection that share a group with at least one other image, and **select
+ungrouped** selects the rest. From there the *selected image[s]* module's
+**group** / **ungroup** buttons act on what you found.
+
+### Requirements
+
+darktable with Lua API 7.0.0 or newer. Developed and tested against darktable
+5.6 on macOS. No external software.
+
+### Installation
+
+```bash
+cp select_grouped.lua ~/.config/darktable/lua/
+echo 'require "select_grouped"' >> ~/.config/darktable/luarc
+```
+
+Or install it with `script_manager`, then restart darktable.
+
+### Notes
+
+- Grouping is a property of the library, not of the collection. An image whose
+  only group partner sits in another film roll still counts as grouped.
+- darktable puts every image in a group, so an image on its own is a group of
+  one. "Grouped" therefore means the group has a second member, not that the
+  image has a group at all — which is why the two buttons together do not
+  simply select everything twice.
+- Both buttons ask the database for each image's group, so a large collection
+  takes a moment. The run is cancellable from the progress bar; cancelling
+  applies the partial selection and says so in the message.
+- Each button is also available as a shortcut, under *lua/select grouped* and
+  *lua/select ungrouped* in the shortcuts dialog. The shortcuts act on the
+  whole current collection.
+
 ## License
 
 GNU Lesser General Public License, version 2.1 or later. See [LICENSE](LICENSE).
