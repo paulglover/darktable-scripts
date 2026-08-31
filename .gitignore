@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# compiled Lua
+*.luac
+luac.out
+
+# local test scratch: stub-darktable harnesses and their fixture trees are
+# throwaway, see CLAUDE.md
+scratch/
+*.bak
+
+# editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Claude Code local settings (CLAUDE.md itself is tracked)
+.claude/settings.local.json
