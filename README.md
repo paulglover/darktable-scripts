@@ -111,4 +111,4 @@ your photos and `~/.config/darktable/library.db`.
 
 ## License
 
-LGPLv2+
+GNU Lesser General Public License, version 2.1 or later. See [LICENSE](LICENSE).
