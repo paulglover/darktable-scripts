@@ -7,6 +7,11 @@ Lua modules for [darktable](https://www.darktable.org/).
 Moves every image carrying a hierarchical tag into a folder tree that mirrors
 the tag tree, then optionally detaches the tags that the path now expresses.
 
+![The move by tag hierarchy module in darktable's lighttable right panel, showing the root tag and destination root fields, the scope selector, the option check buttons and the move images button](docs/module.png)
+
+*The module in the lighttable right panel. The settings shown are one
+configuration, not the defaults — see [Usage](#usage).*
+
 An image tagged `Places|UK|London` is moved to:
 
 | include root tag in path | destination |
