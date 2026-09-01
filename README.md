@@ -2,6 +2,102 @@
 
 Lua modules for [darktable](https://www.darktable.org/).
 
+## move_by_capture_year
+
+Moves the selected images into per-year folders under a destination root,
+taking the year from each image's EXIF capture date.
+
+An image captured on 2025:06:14 is moved to `<destination root>/2025/`.
+
+This is the counterpart to [move_by_tag_hierarchy](#move_by_tag_hierarchy):
+that one turns tags into folders, this one flattens folders down to plain year
+buckets. Tag first, move second — see
+[tag_by_folder_hierarchy](#tag_by_folder_hierarchy) — and the folder structure
+survives as tags.
+
+### Requirements
+
+darktable with Lua API 7.0.0 or newer. Developed and tested against darktable
+5.6 on macOS. No external software.
+
+### Installation
+
+Copy the script into darktable's config directory and require it:
+
+```bash
+cp move_by_capture_year.lua ~/.config/darktable/lua/
+echo 'require "move_by_capture_year"' >> ~/.config/darktable/luarc
+```
+
+Or install it with `script_manager`. Either way, restart darktable — the module
+uses `destroy_method = "hide"`, so script_manager does not re-execute the file
+and a reload from the module list will not pick up a changed script.
+
+**move by capture year** then appears in the lighttable right panel. It may be
+collapsed; click the header to open it.
+
+### Usage
+
+1. Select the images to move.
+2. **destination root** — the directory the year folders are created in, e.g.
+   `/Volumes/Photos`. The button below the field opens a directory chooser.
+3. **dry run** — report what would happen without moving anything. On by
+   default.
+
+The status line reports `moved N, N already in place, N skipped, N failed`. The
+per-image detail always goes to the darktable log; start darktable with
+`-d lua` to see it on the console.
+
+The run is cancellable from the progress bar. Each image is committed
+individually, so stopping partway leaves the already-moved images done and the
+rest untouched.
+
+### The capture date, and nothing else
+
+The year comes from the image's EXIF capture date — the same value darktable's
+own **image time** module edits. Nothing else is consulted: not the file's
+modification time, not the folder it currently sits in, not the filename.
+
+An image whose capture date is missing, unreadable, or outside the range a
+photograph could have been taken in is **skipped rather than guessed at**. A
+wrong year folder is silently wrong; a skip is not. Fix the date in **image
+time** and run the module again.
+
+### What is skipped
+
+- no capture date at all
+- a capture date that cannot be read, or a year before 1826 or beyond next
+  year — darktable reports a missing date as an all-zero timestamp, and a
+  camera whose clock has been reset reports 1970
+- another file, **or an orphaned XMP sidecar**, already at the target path
+- the image's file is missing on disk
+- duplicates sharing one file on disk whose capture dates fall in different
+  years — the file is left alone rather than moved under one duplicate's date
+
+Skips and failures are counted separately: a skip means the image was left
+alone deliberately, a failure means something went wrong (`mkdir` failed, no
+film roll could be created, or darktable raised while moving). Both are logged
+with a reason.
+
+### Notes
+
+- An image already sitting in its year folder is counted as *already in place*
+  and left alone, so a re-run over a part-migrated selection is safe.
+- Tags are never touched.
+- darktable moves the XMP sidecar along with the image.
+- On macOS and Windows, paths that differ only in case name the same directory.
+  The module accounts for this: a destination differing only in case from an
+  existing film roll reuses that film roll instead of creating a second one for
+  the same directory.
+- Settings persist between sessions in `darktablerc` under
+  `lua/move_by_capture_year/`.
+
+### A word of caution
+
+This module moves files on disk. Run it with **dry run** on first and read the
+log before committing to a real run, and make sure you have a backup of both
+your photos and `~/.config/darktable/library.db`.
+
 ## move_by_tag_hierarchy
 
 Moves every image carrying a hierarchical tag into a folder tree that mirrors
