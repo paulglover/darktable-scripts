@@ -640,8 +640,11 @@ pft.widget = dt.new_widget("box") {
 
 local function install_module()
   if not pft.module_installed then
+    -- 475 puts the module between darktable's own tagging (500) and
+    -- geotagging (450) modules: the right panel sorts on this number
+    -- descending, so a higher one sits further up
     dt.register_lib(MODULE, _("prune flat tags"), true, true, {
-      [dt.gui.views.lighttable] = { "DT_UI_CONTAINER_PANEL_RIGHT_CENTER", 710 }
+      [dt.gui.views.lighttable] = { "DT_UI_CONTAINER_PANEL_RIGHT_CENTER", 475 }
     }, pft.widget, nil, nil)
     pft.module_installed = true
   end
