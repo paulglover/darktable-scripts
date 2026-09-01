@@ -156,9 +156,17 @@ tags** appears in the lighttable right panel.
    default.
 
 The status line reports
-`deleted N tags, kept N, N detachments, N skipped, N failed`. The per-tag
-detail always goes to the darktable log; start darktable with `-d lua` to see
-it on the console.
+`deleted N tags, kept N, N detachments, N refused, N skipped, N failed`.
+*Refused* tags were rejected while planning, *skipped* ones while running. The
+detail always goes to the darktable log — including a line naming every single
+image that loses a tag, since a detachment cannot be undone. Start darktable
+with `-d lua` to see it on the console.
+
+The reported detachment count is read back from the library (the drop in the
+tag's image count), not from the number of calls made. A call that reports
+success while changing nothing therefore shows up as `0 detachments` and a
+failure, which is the behaviour that made the first version of this module
+misreport a run entirely.
 
 The run is cancellable from the progress bar, during the scan as well as during
 the pruning. Each tag is committed individually, so stopping partway leaves the
@@ -186,16 +194,39 @@ hierarchy's images and accept `detach` and `delete` calls without changing
 anything in the database. At darktable startup the same walk returns full
 paths, so the behaviour is not stable across a session.
 
-The module therefore treats the walk as a source of *names only*. Every
-candidate must round-trip through `dt.tags.find()` and come back as a tag with
-the identical name before anything happens to it; `find("Grass")` returns nil,
-so such an entry is refused and logged as `REFUSED`, and counted in the status
-line as skipped. Tags are resolved again at execution time, and a delete only
-follows a detach that has been verified against the library.
+The module therefore treats the walk as a source of *names only*, and requires
+two independent things to agree before touching anything:
+
+1. the name must round-trip through `dt.tags.find()` and come back as a tag
+   with the identical name, and
+2. at least one of that tag's images must report carrying a tag of that exact
+   name when asked directly, via `dt.tags.get_tags()`.
+
+The second condition is what makes the first meaningful. `find()` returning an
+object is only `find()`'s word; an image reports a hierarchy as
+`Subjects|Outdoors|Nature|Landscape|Grass`, never as a bare `Grass`, so an
+entry named for a hierarchy level cannot be corroborated and is refused. Both
+modes check this — delete mode has no other evidence at all about the tag it is
+about to remove.
+
+Anything refused is logged as `REFUSED` with its reason and counted in the
+status line. Tags are resolved again at execution time rather than trusting
+objects captured while planning, and a delete only follows a detachment that
+has been verified against the library.
+
+A consequence worth knowing: a flat tag attached to **no** images cannot be
+corroborated either, so it is refused rather than deleted. darktable's own
+`delete_unused_tags` script is the right tool for those.
 
 ### Notes
 
-- A matching flat tag attached to no images at all is deleted in either mode.
+- In *delete the tag from the library* mode the tag is removed in one
+  operation, which detaches it from every image by itself. It is not detached
+  image by image first: that would only add ways for a run to stop half done.
+- **ignore case** is byte-wise, so it does not equate `café` with `CAFÉ`, and
+  it does not see decomposed and precomposed accents (NFD vs NFC) as the same
+  name — realistic on macOS. Both are false negatives: such tags are left
+  alone rather than wrongly pruned.
 - `darktable`'s own internal tags (`darktable|...`) are ignored on both sides:
   they are never pruned, and they never make a flat tag a match — a flat `jpeg`
   tag is not matched by `darktable|format|jpeg`.

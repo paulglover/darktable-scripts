@@ -37,6 +37,10 @@
      with -d lua to see it on the console).
 
   NOTES
+  * a flat tag is only acted on when at least one of its images reports
+    carrying a tag of that exact name.  a tag nothing corroborates - including
+    one attached to no images at all - is refused; darktable's own
+    delete_unused_tags is the right tool for those.
   * every tag this module acts on must round-trip through dt.tags.find():
     walking dt.tags has been seen to yield entries whose name is a leaf
     ("Grass") rather than the full path ("Subjects|...|Grass").  Those look
@@ -127,6 +131,16 @@ local function split_tag(name)
   return parts
 end
 
+-- the first hierarchy level to consider.  #parts is 0 for a name made only of
+-- separators ("||"), and an inlined "leaf_only and #parts or 1" would then be
+-- 0 - 0 is truthy in lua - and index parts[0]
+local function first_component(parts, leaf_only)
+  if #parts == 0 then
+    return nil
+  end
+  return leaf_only and #parts or 1
+end
+
 -- a tag is only ever acted on through the object find() returns for its full
 -- name.  walking dt.tags is not enough: the walk has been observed to yield
 -- entries named for a single level of a hierarchy ("Grass" for
@@ -150,9 +164,6 @@ local function resolve_flat_tag(name)
   end
   if tag.name ~= name then
     return nil, string.format(_("name resolves to a different tag '%s'"), tag.name)
-  end
-  if not is_flat(tag.name) then
-    return nil, _("resolves to a hierarchical tag")
   end
   return tag
 end
@@ -209,22 +220,40 @@ local function fail(message)
   status_label.label = message
 end
 
--- does this image carry a hierarchical tag that contains the component?
-local function image_has_component(image, wanted, leaf_only, ignore_case)
+-- one pass over what an image says about itself, answering two questions:
+--
+--   carries  - does the image carry the flat tag under that exact name?  the
+--              image's own tag list is a second, independent source, and it is
+--              what tells a real flat tag from an entry merely named like one:
+--              a hierarchy reports itself here as "Subjects|...|Grass", never
+--              as a bare "Grass".  find() returning an object is not evidence
+--              on its own - it was find()'s word against nothing that let an
+--              earlier version act on the hierarchy itself
+--   because  - the hierarchical tag that justifies detaching, for the log
+local function inspect_image(image, name, key, leaf_only, ignore_case)
   local tags = dt.tags.get_tags(image)
+  local carries, because = false, nil
   for i = 1, #tags do
-    local name = tags[i].name
-    if not is_internal(name) and not is_flat(name) then
-      local parts = split_tag(name)
-      for p = (leaf_only and #parts or 1), #parts do
-        local component = ignore_case and string.lower(parts[p]) or parts[p]
-        if component == wanted then
-          return true, name
+    local tag_name = tags[i].name
+    if not is_internal(tag_name) then
+      if tag_name == name then
+        carries = true
+      elseif not because and not is_flat(tag_name) then
+        local parts = split_tag(tag_name)
+        local first = first_component(parts, leaf_only)
+        if first then
+          for p = first, #parts do
+            local component = ignore_case and string.lower(parts[p]) or parts[p]
+            if component == key then
+              because = tag_name
+              break
+            end
+          end
         end
       end
     end
   end
-  return false
+  return carries, because
 end
 
 -- build the work list: one entry per matching flat tag.
@@ -239,27 +268,35 @@ local function plan(leaf_only, ignore_case, safe_mode, job)
     names[#names + 1] = dt.tags[i].name
   end
 
-  local flat_names, components = {}, {}
+  local flat_names, components, seen = {}, {}, {}
   local hierarchical = 0
 
   for i = 1, #names do
     local name = names[i]
     if not is_internal(name) then
       if is_flat(name) then
-        flat_names[#flat_names + 1] = name
+        -- the walk can yield a name twice (a flat tag and an entry named for
+        -- a hierarchy level below it): one tag must be one item of work
+        if not seen[name] then
+          seen[name] = true
+          flat_names[#flat_names + 1] = name
+        end
       else
         hierarchical = hierarchical + 1
         local parts = split_tag(name)
-        for p = (leaf_only and #parts or 1), #parts do
-          local key = ignore_case and string.lower(parts[p]) or parts[p]
-          local entry = components[key]
-          if not entry then
-            entry = {}
-            components[key] = entry
-          end
-          -- only kept to name a match in the log
-          if #entry < 3 then
-            entry[#entry + 1] = name
+        local first = first_component(parts, leaf_only)
+        if first then
+          for p = first, #parts do
+            local key = ignore_case and string.lower(parts[p]) or parts[p]
+            local entry = components[key]
+            if not entry then
+              entry = {}
+              components[key] = entry
+            end
+            -- only kept to name a match when no image justifies one
+            if #entry < 1 then
+              entry[#entry + 1] = name
+            end
           end
         end
       end
@@ -274,6 +311,8 @@ local function plan(leaf_only, ignore_case, safe_mode, job)
   end
 
   local items, refused = {}, {}
+  local matched = 0
+
   for i = 1, #flat_names do
     if job and not job.valid then
       return nil, _("cancelled")
@@ -284,6 +323,7 @@ local function plan(leaf_only, ignore_case, safe_mode, job)
     local matches = components[key]
 
     if matches then
+      matched = matched + 1
       local tag, reason = resolve_flat_tag(name)
       if not tag then
         refused[#refused + 1] = { name = name, reason = reason }
@@ -296,31 +336,51 @@ local function plan(leaf_only, ignore_case, safe_mode, job)
 
         local item = {
           name = name,
-          matches = matches,
+          because = matches[1],
           images_total = #images,
           detach = {},
           kept = 0
         }
 
-        if safe_mode then
-          for n = 1, #images do
-            if image_has_component(images[n], key, leaf_only, ignore_case) then
+        -- every image is inspected in both modes: the corroboration below is
+        -- what makes acting on the tag safe, and delete mode has no other
+        -- evidence at all that the tag it resolved is really this flat tag
+        local corroborated = false
+        for n = 1, #images do
+          local carries, because = inspect_image(images[n], name, key, leaf_only, ignore_case)
+          if carries then
+            corroborated = true
+          end
+          if because then
+            item.because = because
+            if safe_mode then
               item.detach[#item.detach + 1] = images[n]
-            else
-              item.kept = item.kept + 1
             end
+          elseif safe_mode then
+            item.kept = item.kept + 1
           end
-          -- an empty tag, or one emptied by the detaching above, has nothing
-          -- left to say and goes with it
-          item.delete = item.kept == 0
-        else
-          for n = 1, #images do
-            item.detach[#item.detach + 1] = images[n]
-          end
-          item.delete = true
         end
 
-        items[#items + 1] = item
+        if not corroborated then
+          -- no image says it carries a tag of this name, so nothing confirms
+          -- the resolved object is the flat tag rather than something merely
+          -- named like it.  an unused flat tag lands here too: darktable's own
+          -- delete_unused_tags is the right tool for those
+          refused[#refused + 1] = {
+            name = name,
+            reason = #images == 0 and _("no images to corroborate the tag against")
+                                  or _("no image carries a tag of that name")
+          }
+        elseif safe_mode then
+          -- an emptied tag has nothing left to say and goes with it
+          item.delete = item.kept == 0 and #item.detach > 0
+          items[#items + 1] = item
+        else
+          -- tag:delete() detaches from every image by itself
+          item.delete = true
+          item.detach_all = true
+          items[#items + 1] = item
+        end
       end
     end
 
@@ -329,11 +389,194 @@ local function plan(leaf_only, ignore_case, safe_mode, job)
     end
   end
 
-  return { items = items, refused = refused, flat_count = #flat_names }
+  return { items = items, refused = refused, matched = matched, flat_count = #flat_names }
 end
 
 local function stop_prune(job)
   job.valid = false
+end
+
+-- everything from the job onwards, so that a raise anywhere inside cannot
+-- leave the module latched as running or the progress bar stranded
+local function run_once(dry_run, leaf_only, ignore_case, safe_mode)
+  local job = dt.gui.create_job(
+    dry_run and _("prune flat tags (dry run)") or _("prune flat tags"),
+    true, stop_prune)
+  pft.job = job
+  job.percent = 0.0
+
+  dt.print_log(string.format("%s: %s, matching %s, %s", MODULE,
+    dry_run and "dry run" or "pruning",
+    leaf_only and "leaf level only" or "any level",
+    safe_mode and "detaching where the hierarchy tag is present"
+              or "deleting matching flat tags"))
+
+  -- get_tags() goes to the database and yields, so the plan can be cancelled
+  -- and an image can disappear from the library while it is built
+  local plan_result, error_message = plan(leaf_only, ignore_case, safe_mode, job)
+  if not plan_result then
+    return nil, error_message
+  end
+
+  local items, refused = plan_result.items, plan_result.refused
+
+  for i = 1, #refused do
+    dt.print_log(string.format("%s: REFUSED (%s): '%s'",
+      MODULE, refused[i].reason, refused[i].name))
+  end
+
+  if #items == 0 then
+    if #refused > 0 then
+      return nil, string.format(
+        _("%d flat tags match a hierarchical tag, all %d refused - see the log"),
+        plan_result.matched, #refused)
+    end
+    return nil, string.format(_("no flat tag matches a hierarchical tag (%d flat tags checked)"),
+      plan_result.flat_count)
+  end
+
+  local deleted, kept, detached, failed = 0, 0, 0, 0
+  local skipped = 0
+  local cancelled = false
+
+  local function process_item(item)
+    if dry_run then
+      if item.delete then
+        deleted = deleted + 1
+      else
+        kept = kept + 1
+      end
+      detached = detached + (item.detach_all and item.images_total or #item.detach)
+      dt.print_log(string.format("%s: would %s '%s' (%d of %d images, matches %s)",
+        MODULE,
+        item.delete and "delete" or "detach from",
+        item.name,
+        item.detach_all and item.images_total or #item.detach,
+        item.images_total,
+        item.because))
+      return
+    end
+
+    -- the plan was built before any of this ran, and detaching yields, so the
+    -- tag is resolved again here rather than trusting the object planned with
+    local tag, reason = resolve_flat_tag(item.name)
+    if not tag then
+      skipped = skipped + 1
+      dt.print_log(string.format("%s: SKIPPED (%s): '%s'", MODULE, reason, item.name))
+      return
+    end
+
+    -- delete mode: deleting detaches from every image by itself, in one
+    -- operation.  detaching image by image first would only add ways for the
+    -- run to stop half done
+    if item.detach_all then
+      tag:delete()
+      if dt.tags.find(item.name) then
+        failed = failed + 1
+        dt.print_log(string.format("%s: FAILED (delete left '%s' in the library)",
+          MODULE, item.name))
+      else
+        deleted = deleted + 1
+        detached = detached + item.images_total
+        dt.print_log(string.format("%s: deleted '%s' (was on %d images, matches %s)",
+          MODULE, item.name, item.images_total, item.because))
+      end
+      return
+    end
+
+    -- detaching cannot be undone and cannot be rolled back halfway, so every
+    -- image that loses the tag is named in the log as it happens
+    for n = 1, #item.detach do
+      dt.tags.detach(tag, item.detach[n])
+      dt.print_log(string.format("%s: detached '%s' from %s",
+        MODULE, item.name, item.detach[n].filename))
+    end
+
+    -- what actually happened, read back from the library.  the count in the
+    -- summary comes from here and not from the number of calls made: calls
+    -- that changed nothing while reporting success are the whole reason this
+    -- module distrusts its own inputs
+    local after = resolve_flat_tag(item.name)
+    local remaining = after and #after or 0
+    local drop = item.images_total - remaining
+    if drop > 0 then
+      detached = detached + drop
+    end
+
+    if not after then
+      failed = failed + 1
+      dt.print_log(string.format("%s: FAILED (tag vanished while detaching): '%s'",
+        MODULE, item.name))
+    elseif #item.detach > 0 and drop <= 0 then
+      failed = failed + 1
+      dt.print_log(string.format("%s: FAILED (asked to detach '%s' from %d images, none took effect)",
+        MODULE, item.name, #item.detach))
+    elseif drop < #item.detach then
+      failed = failed + 1
+      dt.print_log(string.format("%s: FAILED (detached '%s' from %d of %d images): left in the library",
+        MODULE, item.name, drop, #item.detach))
+    elseif item.delete and remaining == 0 then
+      after:delete()
+      if dt.tags.find(item.name) then
+        failed = failed + 1
+        dt.print_log(string.format("%s: FAILED (delete left '%s' in the library)",
+          MODULE, item.name))
+      else
+        deleted = deleted + 1
+        dt.print_log(string.format("%s: deleted '%s' (was on %d images, matches %s)",
+          MODULE, item.name, item.images_total, item.because))
+      end
+    else
+      kept = kept + 1
+      -- remaining can exceed what was planned when the tag gains an image
+      -- mid-run: the detaching still did what it was asked to
+      dt.print_log(string.format("%s: kept '%s' (detached from %d of %d images, %d still carry it)",
+        MODULE, item.name, drop, item.images_total, remaining))
+    end
+  end
+
+  for i = 1, #items do
+    if not job.valid then
+      cancelled = true
+      break
+    end
+
+    -- dt.tags.detach() and delete() raise rather than returning a status, and
+    -- they yield, so an image can disappear from the library while we work.
+    -- one bad tag must not abort the run or strand the progress bar
+    local item_ok, item_error = pcall(process_item, items[i])
+    if not item_ok then
+      failed = failed + 1
+      dt.print_log(string.format("%s: FAILED (%s): %s",
+        MODULE, tostring(item_error), items[i].name))
+    end
+
+    if job.valid then
+      job.percent = 0.5 + 0.5 * i / #items
+    end
+  end
+
+  -- a stop pressed during the last item leaves the loop by its condition, so
+  -- the job is checked here as well
+  if not job.valid then
+    cancelled = true
+  else
+    job.valid = false
+  end
+
+  local summary
+  if dry_run then
+    summary = string.format(_("dry run: %d tags to delete, %d to keep, %d detachments, %d refused"),
+      deleted, kept, detached, #refused)
+  else
+    summary = string.format(_("deleted %d tags, kept %d, %d detachments, %d refused, %d skipped, %d failed"),
+      deleted, kept, detached, #refused, skipped, failed)
+  end
+  if cancelled then
+    summary = string.format(_("cancelled - %s"), summary)
+  end
+
+  return summary
 end
 
 local function run()
@@ -350,158 +593,25 @@ local function run()
   save_settings()
 
   pft.running = true
+  pft.job = nil
 
-  local job = dt.gui.create_job(
-    dry_run and _("prune flat tags (dry run)") or _("prune flat tags"),
-    true, stop_prune)
-  job.percent = 0.0
+  local ok, summary, error_message = pcall(run_once, dry_run, leaf_only, ignore_case, safe_mode)
 
-  dt.print_log(string.format("%s: %s, matching %s, %s", MODULE,
-    dry_run and "dry run" or "pruning",
-    leaf_only and "leaf level only" or "any level",
-    safe_mode and "detaching where the hierarchy tag is present"
-              or "deleting matching flat tags"))
-
-  -- get_tags() goes to the database and yields, so the plan can be cancelled
-  -- and an image can disappear from the library while it is built
-  local ok, plan_result, error_message = pcall(plan, leaf_only, ignore_case, safe_mode, job)
-  if not ok then
-    error_message = tostring(plan_result)
-    plan_result = nil
+  -- whatever happened above, the module must not stay latched and the
+  -- progress bar must not stay on screen
+  if pft.job and pft.job.valid then
+    pft.job.valid = false
   end
-
-  if not plan_result then
-    if job.valid then
-      job.valid = false
-    end
-    pft.running = false
-    return fail(error_message)
-  end
-
-  local items, refused = plan_result.items, plan_result.refused
-
-  for i = 1, #refused do
-    dt.print_log(string.format("%s: REFUSED (%s): '%s'",
-      MODULE, refused[i].reason, refused[i].name))
-  end
-
-  if #items == 0 then
-    job.valid = false
-    pft.running = false
-    local message = string.format(_("no flat tag matches a hierarchical tag (%d flat tags checked)"),
-      plan_result.flat_count)
-    if #refused > 0 then
-      message = string.format(_("%s, %d refused"), message, #refused)
-    end
-    return fail(message)
-  end
-
-  local deleted, kept, detached, failed = 0, 0, 0, 0
-  local skipped = #refused
-  local cancelled = false
-
-  local function process_item(item)
-    if dry_run then
-      if item.delete then
-        deleted = deleted + 1
-      else
-        kept = kept + 1
-      end
-      detached = detached + #item.detach
-      dt.print_log(string.format("%s: would %s '%s' (%d of %d images, matches %s)",
-        MODULE,
-        item.delete and "delete" or "detach from",
-        item.name,
-        #item.detach,
-        item.images_total,
-        item.matches[1]))
-      return
-    end
-
-    -- the plan was built before any of this ran, and detaching yields, so the
-    -- tag is resolved again here rather than trusting the object planned with
-    local tag, reason = resolve_flat_tag(item.name)
-    if not tag then
-      skipped = skipped + 1
-      dt.print_log(string.format("%s: SKIPPED (%s): '%s'", MODULE, reason, item.name))
-      return
-    end
-
-    for n = 1, #item.detach do
-      dt.tags.detach(tag, item.detach[n])
-      detached = detached + 1
-    end
-
-    -- verify against the library rather than assuming the detaching worked:
-    -- deleting a tag cannot be undone, so it only happens once the tag is
-    -- confirmed to carry nothing
-    local after = resolve_flat_tag(item.name)
-    local remaining = after and #after or 0
-
-    if not after then
-      failed = failed + 1
-      dt.print_log(string.format("%s: FAILED (tag vanished while detaching): '%s'",
-        MODULE, item.name))
-    elseif remaining ~= item.kept then
-      failed = failed + 1
-      dt.print_log(string.format("%s: FAILED (expected %d images left on '%s', found %d): left in place",
-        MODULE, item.kept, item.name, remaining))
-    elseif item.delete and remaining == 0 then
-      after:delete()
-      if dt.tags.find(item.name) then
-        failed = failed + 1
-        dt.print_log(string.format("%s: FAILED (delete left '%s' in the library)",
-          MODULE, item.name))
-      else
-        deleted = deleted + 1
-        dt.print_log(string.format("%s: deleted '%s' (was on %d images, matches %s)",
-          MODULE, item.name, item.images_total, item.matches[1]))
-      end
-    else
-      kept = kept + 1
-      dt.print_log(string.format("%s: kept '%s' (detached from %d of %d images, %d without a hierarchical tag)",
-        MODULE, item.name, #item.detach, item.images_total, remaining))
-    end
-  end
-
-  for i = 1, #items do
-    if not job.valid then
-      cancelled = true
-      break
-    end
-
-    -- dt.tags.detach() and delete() raise rather than returning a status, and
-    -- they yield, so an image can disappear from the library while we work.
-    -- one bad tag must not abort the run, strand the progress bar or leave
-    -- the module marked as running for the rest of the session
-    local item_ok, item_error = pcall(process_item, items[i])
-    if not item_ok then
-      failed = failed + 1
-      dt.print_log(string.format("%s: FAILED (%s): %s",
-        MODULE, tostring(item_error), items[i].name))
-    end
-
-    if job.valid then
-      job.percent = 0.5 + 0.5 * i / #items
-    end
-  end
-
-  -- cancelling already destroyed the job
-  if job.valid then
-    job.valid = false
-  end
+  pft.job = nil
   pft.running = false
 
-  local summary
-  if dry_run then
-    summary = string.format(_("dry run: %d tags to delete, %d to keep, %d detachments, %d refused"),
-      deleted, kept, detached, skipped)
-  else
-    summary = string.format(_("deleted %d tags, kept %d, %d detachments, %d skipped, %d failed"),
-      deleted, kept, detached, skipped, failed)
+  if not ok then
+    error_message = tostring(summary)
+    summary = nil
   end
-  if cancelled then
-    summary = string.format(_("cancelled - %s"), summary)
+
+  if not summary then
+    return fail(error_message or _("failed"))
   end
 
   status_label.label = summary
