@@ -284,6 +284,131 @@ Or install it with `script_manager`, then restart darktable.
   *lua/select ungrouped* in the shortcuts dialog. The shortcuts act on the
   whole current collection.
 
+## tag_by_folder_hierarchy
+
+Tags the selected images with a hierarchical tag that mirrors the folder they
+sit in. It is the inverse of `move_by_tag_hierarchy`: that module turns tags
+into folders, this one turns folders into tags. It never moves, renames or
+deletes anything.
+
+Only the deepest folder is tagged. With a folder root of `/Volumes/Photos`:
+
+| image | tag |
+| --- | --- |
+| `/Volumes/Photos/Events/img1.raw` | `Events` |
+| `/Volumes/Photos/Events/Holiday/img2.raw` | `Events\|Holiday` |
+| `/Volumes/Photos/Events/Holiday/Christmas/img3.raw` | `Events\|Holiday\|Christmas` |
+
+Each image gets exactly one tag, for its own folder — never one tag per level.
+
+### Requirements
+
+darktable with Lua API 7.0.0 or newer. Developed and tested against darktable
+5.6 on macOS. No external software.
+
+### Installation
+
+```bash
+cp tag_by_folder_hierarchy.lua ~/.config/darktable/lua/
+echo 'require "tag_by_folder_hierarchy"' >> ~/.config/darktable/luarc
+```
+
+Or install it with `script_manager`, then restart darktable. **tag by folder
+hierarchy** appears in the lighttable right panel.
+
+### Usage
+
+1. **folder root** — the folder the tag tree starts below, e.g.
+   `/Volumes/Photos`. The root itself never appears in a tag. The button under
+   the field opens a directory chooser.
+2. **tag prefix** — optional. `Folders` turns `Events|Holiday` into
+   `Folders|Events|Holiday`, keeping the whole tree under one top-level tag.
+3. **dry run** — report what would be tagged without attaching anything. On by
+   default.
+
+Select the images and press **tag images**. The status line reports
+`tagged N with N tags, N already tagged, N categories, N skipped, N failed`.
+The per-image detail always goes to the darktable log; start darktable with
+`-d lua` to see it on the console.
+
+The run is cancellable from the progress bar. Each image is committed
+individually, so stopping partway leaves the already-tagged images done and the
+rest untouched.
+
+### Folders with no images become categories
+
+A folder that holds only subfolders becomes a category rather than a tag, and
+tagging only the deepest folder is what gets you there. darktable stores one
+row per tag name: attaching `Events|Holiday` does **not** create `Events`.
+`Events` shows up in the tag dictionary as a parent node with no images and
+nothing to attach — the dictionary even offers *set as a tag* for it — which is
+exactly how a category behaves.
+
+The run counts and logs those levels so you can see which folders ended up as
+categories:
+
+```
+tag_by_folder_hierarchy: category (no images of its own): 'Events|Holiday'
+```
+
+The one thing the module cannot do is anything about a level that **already**
+exists as a tag. darktable's Lua API exposes a tag's name and synonyms and
+nothing else — the category flag lives in a column Lua can neither read nor
+write. Such a level is reported and left alone:
+
+```
+tag_by_folder_hierarchy: 'Travel' holds no images but already exists in the
+library; lua cannot read the category flag, so check it in the tag dictionary
+```
+
+That level may already *be* a category — Lua cannot tell — so the log says what
+is known rather than guessing. Check it in the tagging module's dictionary.
+
+Whether a folder holds images is answered from the library's film rolls, not
+from the selection — a folder whose images simply were not selected is not a
+category.
+
+### What is skipped
+
+- images outside the folder root
+- images directly in the folder root, when no tag prefix is set: there is no
+  folder to name them after
+
+Skips and failures are counted separately: a skip means the image was left
+alone deliberately, a failure means something went wrong. Both are logged with
+a reason, including when nothing could be tagged at all. A run that gives up
+before it starts — no selection, no folder root — logs `GAVE UP` with the
+reason, so a run never leaves a header in the log with no conclusion under it.
+
+### Notes
+
+- The module acts on darktable's usual *act on* set: the selection, or the
+  image under the mouse pointer when one is hovered and nothing is selected.
+- The module only ever attaches. It never detaches, so an image tagged for its
+  old folder that has since moved keeps both tags; the stale one has to go by
+  hand. `prune_flat_tags` will not help there — both tags are hierarchical.
+- Every attachment is verified by asking the image what it carries afterwards.
+  An attach that reports success while changing nothing is counted as a
+  failure, not as a tag.
+- An image that already carries its folder tag is counted as *already tagged*
+  and left alone, so re-running the module is cheap and idempotent.
+- `|` separates tag levels, so a folder name containing one would silently add
+  a level. Those characters, and control characters, become `_`.
+- Runs of whitespace in a folder name collapse to a single space, so
+  `Myrtle Beach  May 2022` tags as `Myrtle Beach May 2022`. A doubled space is
+  invisible in the tag dictionary and would otherwise make two tags out of what
+  reads as one name. Leading and trailing whitespace is trimmed off each level.
+- On macOS and Windows, paths that differ only in case name the same folder.
+  The module accounts for this: a tag differing from an existing one only in
+  case is not created, and the library's existing spelling is reused. On Linux
+  the two folders are genuinely different and get two tags.
+- The folder root is not required to exist. Images on an unmounted volume still
+  have a path to read a tag off; a missing root is noted in the log, not
+  refused.
+- `darktable`'s own internal tags are refused as a prefix and never produced.
+- Settings persist between sessions in `darktablerc` under
+  `lua/tag_by_folder_hierarchy/`.
+
 ## License
 
 GNU Lesser General Public License, version 2.1 or later. See [LICENSE](LICENSE).
