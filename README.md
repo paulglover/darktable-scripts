@@ -380,6 +380,99 @@ Or install it with `script_manager`, then restart darktable.
   *lua/select ungrouped* in the shortcuts dialog. The shortcuts act on the
   whole current collection.
 
+## set_time_from_filename
+
+Sets the capture date of the selected images from a date encoded in their
+filename, for scans and exports that carry no usable EXIF date.
+
+darktable's own **image time** module is the better tool when one date applies
+to the whole selection. This one exists for the case it does not: a folder of
+scans where every file needs a different date, and every date is already in the
+filename.
+
+### Requirements
+
+darktable with Lua API 7.0.0 or newer. Developed and tested against darktable
+5.6 on macOS. No external software.
+
+### Installation
+
+Copy the script into darktable's config directory and require it:
+
+```bash
+cp set_time_from_filename.lua ~/.config/darktable/lua/
+echo 'require "set_time_from_filename"' >> ~/.config/darktable/luarc
+```
+
+Or install it with `script_manager`. Either way, restart darktable — the module
+uses `destroy_method = "hide"`, so script_manager does not re-execute the file
+and a reload from the module list will not pick up a changed script.
+
+**set capture time from filename** then appears in the lighttable right panel.
+It may be collapsed; click the header to open it.
+
+### Usage
+
+1. Select the images.
+2. **only images with no capture date** — leave images that already have a date
+   alone. On by default: overwriting a date darktable read from the file itself
+   is the destructive case, and it cannot be undone from here.
+3. **dry run** — report what would be set without changing anything. On by
+   default.
+
+The status line reports `set N, N already correct, N skipped, N failed`. The
+per-image detail always goes to the darktable log, including the previous value
+of every date it replaces; start darktable with `-d lua` to see it on the
+console.
+
+### How the filename is read
+
+The first run of eight or more digits, whose first eight are `YYYYMMDD`:
+
+| filename | capture date |
+| --- | --- |
+| `P20260104-02.jpg` | `2026:01:04 00:00:00` |
+| `i2026022401.jpg` | `2026:02:24 00:00:00` |
+
+In the second case the run is ten digits long — the trailing `01` is a sequence
+number, not a time.
+
+A six-digit `HHMMSS` immediately after the date is read as the time, whether
+glued on or separated by a single non-digit:
+
+| filename | capture date |
+| --- | --- |
+| `20240415_115416_IMG_4198.jpg` | `2024:04:15 11:54:16` |
+
+### What is skipped
+
+- no run of eight or more digits in the filename
+- the digits are not a real calendar date — the month, the day of the month and
+  leap years are all checked, so `20260229` is refused and `20240229` is not
+- the year is before 1826 or beyond next year, which is what keeps a hash or a
+  serial number from becoming a date. `00000808.rw2` gives year 0000, and the
+  eight-digit run inside a SHA-512 filename gave year 8958; both are rejected
+- the image already has a capture date, unless the guard above is turned off
+
+### Notes
+
+- Every write is read back afterwards. A write that reports success while
+  changing nothing is counted as a failure, not as a date set.
+- An image already holding exactly the filename date is counted as *already
+  correct* rather than rewritten, so re-running is idempotent.
+- This changes the database, and the XMP sidecar if darktable is writing them.
+  It does not rewrite the EXIF inside the image file.
+- Settings persist between sessions in `darktablerc` under
+  `lua/set_time_from_filename/`.
+
+### A word of caution
+
+Turning off **only images with no capture date** overwrites capture dates that
+darktable read from the files themselves, and **that cannot be undone from
+Lua**. Run with **dry run** on first — the log names the old value of every
+date it would replace — and make sure you have a backup of
+`~/.config/darktable/library.db`.
+
 ## tag_by_folder_hierarchy
 
 Tags the selected images with a hierarchical tag that mirrors the folder they
