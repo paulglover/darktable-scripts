@@ -156,9 +156,9 @@ tags** appears in the lighttable right panel.
    default.
 
 The status line reports
-`deleted N tags, kept N, N detachments, N failed`. The per-tag detail always
-goes to the darktable log; start darktable with `-d lua` to see it on the
-console.
+`deleted N tags, kept N, N detachments, N skipped, N failed`. The per-tag
+detail always goes to the darktable log; start darktable with `-d lua` to see
+it on the console.
 
 The run is cancellable from the progress bar, during the scan as well as during
 the pruning. Each tag is committed individually, so stopping partway leaves the
@@ -176,6 +176,22 @@ silently.
 Choose *delete the tag from the library* when the flat tags are known leftovers
 — an import from software that had no tag hierarchy, say — and the hierarchy is
 now the only version you want to keep.
+
+### Every tag is verified by name before it is touched
+
+Walking `dt.tags` is not sufficient to identify a flat tag. The walk has been
+observed mid-session to yield entries named for a single level of a hierarchy —
+`Grass` for `Subjects|Outdoors|Nature|Landscape|Grass` — which report that
+hierarchy's images and accept `detach` and `delete` calls without changing
+anything in the database. At darktable startup the same walk returns full
+paths, so the behaviour is not stable across a session.
+
+The module therefore treats the walk as a source of *names only*. Every
+candidate must round-trip through `dt.tags.find()` and come back as a tag with
+the identical name before anything happens to it; `find("Grass")` returns nil,
+so such an entry is refused and logged as `REFUSED`, and counted in the status
+line as skipped. Tags are resolved again at execution time, and a delete only
+follows a detach that has been verified against the library.
 
 ### Notes
 
