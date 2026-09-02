@@ -210,6 +210,99 @@ This module moves files on disk. Run it with **dry run** on first and read the
 log before committing to a real run, and make sure you have a backup of both
 your photos and `~/.config/darktable/library.db`.
 
+## prune_ancestor_tags
+
+Detaches the hierarchical tags an image no longer needs because a deeper tag on
+the same image already says the same thing. An image tagged
+`Places|USA|Virginia|Roanoke` does not also need `Places`, `Places|USA` or
+`Places|USA|Virginia`.
+
+This is the companion to [prune_flat_tags](#prune_flat_tags), and the two ask
+different questions. `prune_flat_tags` looks at the tag list across the whole
+library and matches a flat name against any level of any hierarchy.
+`prune_ancestor_tags` looks at one image at a time and compares whole paths
+from the root, so it only ever removes a tag that is literally an ancestor of
+another tag on that same image.
+
+### Requirements
+
+darktable with Lua API 7.0.0 or newer. Developed and tested against darktable
+5.6 on macOS. No external software.
+
+### Installation
+
+```bash
+cp prune_ancestor_tags.lua ~/.config/darktable/lua/
+echo 'require "prune_ancestor_tags"' >> ~/.config/darktable/luarc
+```
+
+Or install it with `script_manager`, then restart darktable. **prune ancestor
+tags** appears in the lighttable right panel.
+
+### Usage
+
+1. Select the images in lighttable.
+2. **dry run** — on by default. Reports what would be detached without changing
+   anything. The per-tag report always goes to the darktable log; start
+   darktable with `-d lua` to see it on the console.
+3. Press **prune ancestor tags**.
+
+### What counts as redundant
+
+A tag is redundant on an image when another tag on that same image begins with
+it and continues with a `|`. Whole levels only, and only from the root:
+
+| on the image | verdict |
+| --- | --- |
+| `Places\|USA` beside `Places\|USA\|Virginia` | redundant |
+| `Places` beside `Places\|USA\|Virginia` | redundant |
+| `Styles\|Film` beside `Film Details\|Film\|Fujifilm` | kept — a different root |
+| `Places\|US` beside `Places\|USA\|Virginia` | kept — `US` is not a whole level |
+| `Virginia` beside `Places\|USA\|Virginia\|Roanoke` | kept — not a path from the root |
+| `places\|usa` beside `Places\|USA\|Virginia` | kept — tags are case sensitive |
+
+A branch that is nobody's ancestor is kept, so an image carrying several leaves
+under one tree keeps every one of them and loses only the levels above:
+
+```
+Subjects|Outdoors                          detached
+Subjects|Outdoors|Nature                   detached
+Subjects|Outdoors|Nature|Landscape         detached
+Subjects|Outdoors|Nature|Landscape|Details kept
+Subjects|Outdoors|Nature|Landscape|Rocks   kept
+Subjects|Outdoors|Nature|Plants            kept
+```
+
+### Notes
+
+* **No tag is ever deleted from the library.** This module only detaches tags
+  from images. A tag left attached to nothing stays in the tag list until
+  darktable's own *delete unused tags* is run, and a tag other images still
+  carry is untouched.
+* darktable's internal tags (`darktable|…`) are never detached, and are never
+  used to justify detaching anything else.
+* Every tag is looked up again by its full name before it is detached, and the
+  image's tag list is read back afterwards. A tag whose name does not resolve
+  to itself is refused rather than detached, and a detach that reports success
+  while changing nothing is counted as a failure, not a detachment. Each detach
+  is written to the log as it happens rather than after it is verified, so a
+  change that cannot be undone always leaves a record even if the run then
+  fails.
+* **Sidecar files.** darktable writes XMP sidecars either on import or after
+  every edit, depending on `write_sidecar_files` in your `darktablerc`. On the
+  "after edit" setting a real run means one sidecar write per image touched, so
+  prune in batches. Whether removing an ancestor tag also shrinks the flat
+  keyword list an XMP exports is a question about darktable's writer, not its
+  Lua API — check a sidecar before pruning a set you export to other software.
+* The run can be cancelled from the progress bar. Tags already detached stay
+  detached.
+* Running it twice is harmless: the second run finds nothing left to do.
+
+### A word of caution
+
+Detaching a tag cannot be undone from Lua. Run it with **dry run** on first and
+read the log, and back up `~/.config/darktable/library.db` before a real run.
+
 ## prune_flat_tags
 
 Removes flat (non-hierarchical) tags whose name a hierarchical tag already
