@@ -50,6 +50,10 @@
     "delete unused tags" is run.
   * darktable's internal tags ("darktable|...") are never detached, and never
     used to justify detaching anything else.
+  * the plan is built per image, from that image's own tags, so select whole
+    groups before a run.  two group members carrying the same tags stay the
+    same only if both are selected; pruning one without the other makes them
+    diverge.
   * matching is case sensitive, because darktable's tags are: "Places|UK" and
     "places|uk" are two different tags and neither covers the other.
   * detaching a tag cannot be undone from Lua.  Dry run is on by default; back

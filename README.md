@@ -294,6 +294,13 @@ Subjects|Outdoors|Nature|Plants            kept
   prune in batches. Whether removing an ancestor tag also shrinks the flat
   keyword list an XMP exports is a question about darktable's writer, not its
   Lua API — check a sidecar before pruning a set you export to other software.
+* **Grouped images.** The plan is built per image, from that image's own tags,
+  so select whole groups — expand them, or turn grouping off — before a run.
+  Two members carrying identical tags stay identical only if both are in the
+  selection; prune one without the other and they diverge. Note also that
+  pruning cannot make differing tags match: stripping a redundant ancestor from
+  a leader whose member never had the deeper tag pushes the two further apart,
+  not closer.
 * The run can be cancelled from the progress bar. Tags already detached stay
   detached.
 * Running it twice is harmless: the second run finds nothing left to do.
