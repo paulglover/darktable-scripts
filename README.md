@@ -439,6 +439,98 @@ corroborated either, so it is refused rather than deleted. darktable's own
 Detaching and deleting tags cannot be undone from Lua. Run it with **dry run**
 on first and read the log, and back up `~/.config/darktable/library.db`.
 
+## RL_out_sharp
+
+Richardson-Lucy output sharpening with G'MIC, applied to the exported file
+after darktable has resized it.
+
+darktable's own sharpening runs in the pixelpipe, before the export is scaled
+down, so it cannot correct the softness the downscale itself introduces. This
+runs G'MIC's `deblur_richardsonlucy` on the finished file instead.
+
+This is a reworked version of darktable's bundled
+`contrib/RL_out_sharp.lua` by Marco Carrarini. The original only offered its own
+export target, with a single output folder and no file name template, and
+failed silently when that folder was not set.
+
+### Requirements
+
+darktable with Lua API 7.0.0 or newer. Developed and tested against darktable
+5.6 on macOS. Needs the [G'MIC](https://gmic.eu/) command line tool
+(`brew install gmic`), and [exiftool](https://exiftool.org/) to carry the
+metadata and ICC profile over to the sharpened file.
+
+### Installation
+
+darktable bundles the original under the same name, so turn off
+**RL output sharpening** in `script_manager` first, so the two do not both
+register the same export target, module and export handler. Then:
+
+```bash
+cp RL_out_sharp.lua ~/.config/darktable/lua/
+echo 'require "RL_out_sharp"' >> ~/.config/darktable/luarc
+```
+
+Restart darktable, then set the G'MIC executable under *preferences > lua
+options* (e.g. `/opt/homebrew/bin/gmic`).
+
+**RL output sharpening** appears in the lighttable right panel, directly above
+*export*.
+
+### Usage
+
+**Sharpening file on disk exports.** Export as usual with *file on disk*: the
+file darktable writes — at the path its template expands to, in its format and
+quality — is sharpened in place. JPEG and TIFF (8, 16 and 32-bit float) are
+supported; anything else is left alone, with a message saying so.
+
+The module's **settings for** list holds a *default (other exports)* entry and
+one entry per export preset, each with its own **sharpen file on disk exports**
+switch, **sigma** and **iterations**. A preset uses the default settings until
+something is changed for it; hovering the list shows the selected preset's
+path template and whether it is still on the defaults.
+
+**The RL output sharpen export target.** The original export target is still
+there: it exports to a temporary JPEG or TIFF, sharpens it, and writes a JPEG
+to one output folder. It uses the default sigma and iterations.
+
+sigma 0.7, 10 iterations is a sensible start for web-size exports. Raise
+iterations for a crisper result; lower sigma if edges start to halo.
+
+### How an export is matched to a preset
+
+The export event does not say which preset is in use, so the module matches on
+the *file on disk* path template, which it reads from each preset in
+`data.db`. That makes batch exports across several presets pick up each
+preset's settings. Two consequences:
+
+- Presets need distinct templates. Two presets sharing one template share
+  settings — the alphabetically later one wins.
+- A preset edited in the export module without being saved no longer matches,
+  and gets the default settings. The on-screen message names the entry used,
+  e.g. `sharpening a.jpg (Substack posts) ...`.
+
+New and changed presets are picked up on entering lighttable, and at export
+time when a template matches nothing.
+
+### Notes
+
+- G'MIC splits its output argument on commas, so it only ever sees plain
+  temporary file names; spaces and commas in the real path are fine. The
+  result is copied into place, so it works across volumes.
+- When G'MIC fails, the message gives its exit code and points to
+  `RL_out_sharp.log` in darktable's temporary directory, which holds G'MIC's own
+  error.
+- Without exiftool the sharpened file carries no metadata and no ICC profile.
+- Settings persist in `darktablerc` under `lua/RL_out_sharp/`, the same keys as
+  the original script.
+
+### License
+
+Unlike the rest of this repository, `RL_out_sharp.lua` is derived from a
+GPL-licensed darktable script and stays under the GNU General Public License,
+version 3 or later.
+
 ## select_grouped
 
 Adds **select grouped** and **select ungrouped** to the *select* module in the
@@ -701,3 +793,7 @@ reason, so a run never leaves a header in the log with no conclusion under it.
 ## License
 
 GNU Lesser General Public License, version 2.1 or later. See [LICENSE](LICENSE).
+
+The exception is `RL_out_sharp.lua`, which is derived from a darktable script
+and remains under the GNU General Public License, version 3 or later, as its
+header states.
