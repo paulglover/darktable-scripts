@@ -53,8 +53,10 @@
   CAVEATS
     GMic is only run on temporary files with plain names, so file names
     containing spaces or commas are fine.
-    Metadata (including the ICC profile) is copied back with exiftool if it
-    is installed; without it the sharpened files have no metadata.
+    Metadata (including the ICC profile) is copied back with exiftool, which
+    is required.  It is looked for on the PATH and in /opt/homebrew/bin,
+    /usr/local/bin and /opt/local/bin; if it can't be found or fails, the
+    image is left unsharpened rather than written without its metadata.
 
   BUGS, COMMENTS, SUGGESTIONS
     send to Marco Carrarini, marco.carrarini@gmail.com
@@ -69,6 +71,11 @@
       - gmic only sees plain temp file names; spaces and commas in paths work
       - ICC profile copied back with the metadata
       - errors say what went wrong and point to RL_out_sharp.log
+      - find a Homebrew exiftool when darktable is started from the Dock,
+        and never write a sharpened file that lost its metadata
+      - sigma, iterations and jpg quality are saved (sliders have no
+        changed_callback); sigma and iterations are greyed out for a preset
+        that isn't sharpened
 ]]
 
 local dt = require "darktable"
@@ -121,6 +128,7 @@ end
 -- widgets are created below, the functions only use them at export time
 local sigma_slider, iterations_slider, jpg_quality_slider
 local output_folder_selector, disk_enable, storage_widget, entry_combo
+local save_widgets
 
 -- per export preset settings -------------------------------------------------
 -- "file on disk" exports are matched to an export preset by their path
@@ -226,19 +234,46 @@ local function copy_file(from, to)
   return true
   end
 
--- preserve original image metadata in the output image -----------------------
-local function preserve_metadata(original, sharpened)
-  local exiftool = df.check_if_bin_exists("exiftool")
+-- find exiftool --------------------------------------------------------------
+-- darktable started from the Dock or Finder only has /usr/bin:/bin:/usr/sbin:/sbin
+-- on its PATH, so check_if_bin_exists misses a Homebrew or MacPorts install.
+-- A path found here is saved as the executable path preference.
+local EXIFTOOL_DIRS = {"/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"}
 
-  if exiftool then
-    dtsys.external_command(df.sanitize_filename(exiftool) ..
-      " -q -overwrite_original -tagsFromFile " .. df.sanitize_filename(original) ..
-      " -all:all -icc_profile " .. df.sanitize_filename(sharpened) ..
-      " >> " .. df.sanitize_filename(LOG_FILE) .. " 2>&1")
-  else
-    dt.print_log(MODULE_NAME .. " exiftool not found,  metadata not preserved")
+local function find_exiftool()
+  local exiftool = df.check_if_bin_exists("exiftool")
+  if exiftool then return exiftool end
+  if dt.configuration.running_os == "windows" then return nil end
+  for i = 1, #EXIFTOOL_DIRS do
+    local path = EXIFTOOL_DIRS[i] .. "/exiftool"
+    if df.check_if_file_exists(path) then
+      df.set_executable_path_preference("exiftool", path)
+      return path
+      end
+    end
+  return nil
   end
-end
+
+-- preserve original image metadata in the output image -----------------------
+-- Returns true, or false and an error message.
+local function preserve_metadata(original, sharpened)
+  local exiftool = find_exiftool()
+  if not exiftool then
+    dt.print_error(MODULE_NAME .. ": exiftool not found, metadata not preserved")
+    return false, _("exiftool not found, metadata not preserved")
+    end
+
+  local result = dtsys.external_command(df.sanitize_filename(exiftool) ..
+    " -q -overwrite_original -tagsFromFile " .. df.sanitize_filename(original) ..
+    " -all:all -icc_profile " .. df.sanitize_filename(sharpened) ..
+    " >> " .. df.sanitize_filename(LOG_FILE) .. " 2>&1")
+  if result ~= 0 then
+    dt.print_error(MODULE_NAME .. ": exiftool failed (exit " .. tostring(result) .. ")")
+    return false, string.format(_("exiftool failed (exit %s), metadata not preserved, see %s"),
+      tostring(result), LOG_FILE)
+    end
+  return true
+  end
 
 -- sharpen input into output ----------------------------------------------------
 --   options      gmic commands run after the deblur
@@ -270,7 +305,14 @@ local function sharpen(gmic, settings, id, input, output, options, out_ext, out_
     return false, string.format(_("gmic failed (exit %s), see %s"), tostring(result), LOG_FILE)
     end
 
-  preserve_metadata(tmp_in, tmp_out)
+  -- without its metadata the sharpened file would lose its title, copyright
+  -- and colour profile, so leave the export as it is rather than replace it
+  local meta_ok, meta_err = preserve_metadata(tmp_in, tmp_out)
+  if not meta_ok then
+    os.remove(tmp_in)
+    os.remove(tmp_out)
+    return false, string.format(_("%s not sharpened: %s"), df.get_filename(input), meta_err)
+    end
 
   local ok = copy_file(tmp_out, output)
   os.remove(tmp_in)
@@ -311,6 +353,7 @@ local function export2RL(storage, image_table, extra_data)
     return
     end
 
+  save_widgets()
   local jpg_quality_str = string.format("%.0f", jpg_quality_slider.value)
   local settings = get_settings(DEFAULT_ENTRY)
 
@@ -344,7 +387,9 @@ local function export2RL(storage, image_table, extra_data)
 local function sharpen_disk_export(event, image, filename, format, storage)
   if not storage or storage.plugin_name ~= "disk" then return end
 
-  -- this runs in the export thread, so only data is updated here, not widgets
+  -- this runs in the export thread; reading a widget hands the read to the
+  -- gui thread (dt_lua_gtk_wrap), and nothing here sets one
+  save_widgets()
   local template = storage.filename
   local entry = template and template_preset[template]
   if template and not entry then
@@ -390,12 +435,14 @@ local function sharpen_disk_export(event, image, filename, format, storage)
 local function destroy()
   dt.destroy_storage("exp2RL")
   dt.destroy_event(MODULE_NAME, "intermediate-export-image")
+  dt.destroy_event(MODULE_NAME, "exit")
   if dt.gui.libs[MODULE_NAME] then dt.gui.libs[MODULE_NAME].visible = false end
 end
 
 local function restart()
   dt.register_storage("exp2RL", _("RL output sharpen"), nil, export2RL, supported, nil, storage_widget)
   dt.register_event(MODULE_NAME, "intermediate-export-image", sharpen_disk_export)
+  dt.register_event(MODULE_NAME, "exit", function(event) save_widgets() end)
   if dt.gui.libs[MODULE_NAME] then dt.gui.libs[MODULE_NAME].visible = true end
 end
 
@@ -453,25 +500,50 @@ disk_enable = dt.new_widget("check_button"){
               "using its file name template, format and quality"),
   }
 
-local loading = false   -- true while widgets are being filled in from the settings
+-- darktable's Lua slider has no changed_callback, and widget callbacks run
+-- asynchronously, some time after the change that triggered them.  So the
+-- widgets are not saved as they change but whenever their values are about
+-- to be needed or replaced: before another entry is shown, when the checkbox
+-- is clicked, on leaving lighttable, at export and at exit.  Only values that
+-- differ from the stored ones are written, so merely looking at a preset
+-- doesn't give it settings of its own.
+local shown = false   -- the widgets hold an entry's settings, not their initial values
 
-local function save_current()
-  if loading then return end
-  save_settings(current_entry, {
+save_widgets = function()
+  if not shown then return end
+  local settings = {
     enabled = disk_enable.value,
     sigma = sigma_slider.value,
     iterations = iterations_slider.value,
-    })
+    }
+  local stored = get_settings(current_entry)
+  if settings.enabled ~= stored.enabled
+     or math.abs(settings.sigma - stored.sigma) > 0.001
+     or math.abs(settings.iterations - stored.iterations) > 0.5 then
+    save_settings(current_entry, settings)
+    end
+  local quality = string.format("%.0f", jpg_quality_slider.value)
+  if quality ~= dt.preferences.read(MODULE_NAME, "jpg_quality", "string") then
+    dt.preferences.write(MODULE_NAME, "jpg_quality", "string", quality)
+    end
+  end
+
+-- sigma and iterations only matter while sharpening is on, except for the
+-- default settings, which the "RL output sharpen" storage uses as well
+local function update_sensitivity()
+  local active = current_entry == DEFAULT_ENTRY or disk_enable.value
+  sigma_slider.sensitive = active
+  iterations_slider.sensitive = active
   end
 
 local function show_entry(entry)
   current_entry = entry
   local settings = get_settings(entry)
-  loading = true
   disk_enable.value = settings.enabled
   sigma_slider.value = settings.sigma
   iterations_slider.value = settings.iterations
-  loading = false
+  shown = true
+  update_sensitivity()
 
   local tooltip = _("exports are matched to a preset by the path template of \"file on disk\"")
   for _k, preset in ipairs(presets) do
@@ -487,9 +559,9 @@ local function show_entry(entry)
 
 -- fill the combobox with the current export presets
 local function refresh_entries()
+  save_widgets()
   load_presets()
   local selected = current_entry
-  loading = true
   for i = #entry_combo, 1, -1 do entry_combo[i] = nil end
   entry_combo[1] = DEFAULT_ENTRY
   local index = 1
@@ -498,19 +570,26 @@ local function refresh_entries()
     if preset.name == selected then index = i + 1 end
     end
   entry_combo.value = index
-  loading = false
   show_entry(entry_combo.value)
   end
 
+-- changed_callback also fires, late, for refresh_entries' own changes; by
+-- then the combobox shows current_entry and there is nothing to do
 entry_combo = dt.new_widget("combobox"){
   label = _("settings for"),
   changed_callback = function(self)
-    if not loading then show_entry(self.value) end
+    local entry = self.value
+    if not entry or entry == "" or entry == current_entry then return end
+    save_widgets()
+    show_entry(entry)
     end,
   DEFAULT_ENTRY
   }
 
-disk_enable.clicked_callback = save_current
+disk_enable.clicked_callback = function(self)
+  save_widgets()
+  update_sensitivity()
+  end
 
 storage_widget = dt.new_widget("box"){
   orientation = "vertical",
@@ -548,7 +627,7 @@ local function install_module()
     {[dt.gui.views.lighttable] = {"DT_UI_CONTAINER_PANEL_RIGHT_CENTER", export_position + 1}},
     lib_widget,
     function(self, old_view, new_view) refresh_entries() end,
-    nil
+    function(self, old_view, new_view) save_widgets() end
     )
   module_installed = true
   end
@@ -570,6 +649,9 @@ else
 -- sharpen file on disk exports -----------------------------------------------
 dt.register_event(MODULE_NAME, "intermediate-export-image", sharpen_disk_export)
 
+-- keep slider changes made since the last save --------------------------------
+dt.register_event(MODULE_NAME, "exit", function(event) save_widgets() end)
+
 -- register the new preferences -----------------------------------------------
 dt.preferences.register(MODULE_NAME, "gmic_exe", "file",
 _("executable for GMic CLI"),
@@ -578,13 +660,6 @@ _("select executable for GMic command line version")  , "")
 -- set widgets to the last used values at startup -----------------------------
 jpg_quality_slider.value = dt.preferences.read(MODULE_NAME, "jpg_quality", "float")
 refresh_entries()
-
--- save values as they change -------------------------------------------------
-sigma_slider.changed_callback = save_current
-iterations_slider.changed_callback = save_current
-jpg_quality_slider.changed_callback = function(self)
-  dt.preferences.write(MODULE_NAME, "jpg_quality", "string", string.format("%.0f", self.value))
-  end
 
 -- script_manager integration
 
