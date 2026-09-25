@@ -76,6 +76,8 @@
       - sigma, iterations and jpg quality are saved (sliders have no
         changed_callback); sigma and iterations are greyed out for a preset
         that isn't sharpened
+      - settings of export presets that no longer exist are removed from
+        darktablerc when the preset list is refreshed
 ]]
 
 local dt = require "darktable"
@@ -171,13 +173,14 @@ local function save_settings(entry, settings)
 
 -- read the user's export presets and their "file on disk" path templates
 -- from data.db.  The template is the last string in the preset's params,
--- after the storage name.
+-- after the storage name.  Returns true when the query actually ran, so that
+-- an empty result means "no export presets" rather than "sqlite3 missing".
 local function load_presets()
   local db = dt.configuration.config_dir .. PS .. "data.db"
   local sqlite = df.check_if_file_exists("/usr/bin/sqlite3") and "/usr/bin/sqlite3" or "sqlite3"
   local p = io.popen(sqlite .. " -readonly " .. df.sanitize_filename(db) ..
     " \"select name, hex(op_params) from presets where operation = 'export' and writeprotect = 0 order by name\" 2>/dev/null")
-  if not p then return end
+  if not p then return false end
 
   local new_presets, new_map = {}, {}
   for line in p:lines() do
@@ -197,10 +200,43 @@ local function load_presets()
         end
       end
     end
-  p:close()
+  -- a missing sqlite3 exits 127; keep the presets already loaded in that case
+  local ok, reason, code = p:close()
+  if not ok or reason ~= "exit" or code ~= 0 then return false end
 
-  if #new_presets > 0 then
-    presets, template_preset = new_presets, new_map
+  presets, template_preset = new_presets, new_map
+  return true
+  end
+
+-- per preset settings are keyed by the preset name, so a preset that was
+-- renamed or deleted leaves its settings behind in darktablerc.  Remove the
+-- keys of the "preset_" namespace that no longer belong to a preset; the
+-- default settings have no prefix and are never touched.  darktablerc is
+-- rewritten from these when darktable exits.  get_keys and destroy need a
+-- newer api than this script asks for, so both are checked for.
+local SETTING_NAMES = {"disk_enabled", "sigma", "iterations", "initialized"}
+
+local function prune_settings()
+  if not (dt.preferences.get_keys and dt.preferences.destroy) then return end
+
+  local keep = {}
+  for i = 1, #presets do
+    for j = 1, #SETTING_NAMES do
+      keep[pref_key(presets[i].name, SETTING_NAMES[j])] = true
+      end
+    end
+
+  local prefix = "lua/" .. MODULE_NAME .. "/"
+  local keys = dt.preferences.get_keys()
+  for i = 1, #keys do
+    local key = keys[i]
+    if string.sub(key, 1, #prefix) == prefix then
+      local name = string.sub(key, #prefix + 1)
+      if string.sub(name, 1, 7) == "preset_" and not keep[name] then
+        dt.preferences.destroy(MODULE_NAME, name)
+        dt.print_log(MODULE_NAME .. ": removed orphaned setting " .. name)
+        end
+      end
     end
   end
 
@@ -560,7 +596,7 @@ local function show_entry(entry)
 -- fill the combobox with the current export presets
 local function refresh_entries()
   save_widgets()
-  load_presets()
+  if load_presets() then prune_settings() end
   local selected = current_entry
   for i = #entry_combo, 1, -1 do entry_combo[i] = nil end
   entry_combo[1] = DEFAULT_ENTRY
