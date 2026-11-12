@@ -790,6 +790,63 @@ reason, so a run never leaves a header in the log with no conclusion under it.
 - Settings persist between sessions in `darktablerc` under
   `lua/tag_by_folder_hierarchy/`.
 
+## trichrome_merge
+
+Merges the three selected RAW frames of one shot — one under red light, one
+green, one blue — into a single linear DNG with
+[trichrome](https://github.com/paulglover/trichrome), writes it beside the
+frames, and imports it into the library.
+
+### Requirements
+
+darktable with Lua API 7.0.0 or newer. Developed and tested against darktable
+5.6 on macOS. Needs trichrome 0.6.0 or newer: the module names the file with
+`--name` and gives no film ID. It is looked for on the `PATH` and in
+`/opt/homebrew/bin`, `/usr/local/bin` and `/opt/local/bin` — darktable started
+from the Dock has none of those on its `PATH`. Anywhere else, name it in
+`darktablerc`:
+
+```
+lua/executable_paths/trichrome=/path/to/trichrome
+```
+
+### Installation
+
+```bash
+cp trichrome_merge.lua ~/.config/darktable/lua/
+echo 'require "trichrome_merge"' >> ~/.config/darktable/luarc
+```
+
+Restart darktable. **trichrome merge** appears in the lighttable right panel.
+
+### Usage
+
+1. Select exactly three images. Selection order does not matter: trichrome
+   takes them in filename order, red light first.
+2. Check the **file name pattern**. It takes darktable's variables, evaluated
+   against the first frame in filename order; a trailing `.dng` is optional.
+   The default is
+
+   ```
+   $(YEAR)$(MONTH)$(DAY)-$(HOUR)$(MINUTE)$(SECOND)-$(IMAGE.ID.NEXT[6]).dng
+   ```
+
+3. Click **merge**. The DNG is written into the first frame's folder and
+   imported.
+
+### Notes
+
+* `$(YEAR)` … `$(SECOND)` are the time of the merge. `$(EXIF.YEAR)` …
+  `$(EXIF.SECOND)` are the frame's capture time.
+* `$(IMAGE.ID.NEXT)` is darktable's guess at the next image id: the highest id
+  in the library plus one. The library never reuses the id of a removed image,
+  so the guess can be low. When the imported DNG gets a different id, the
+  module renames it to carry the real one.
+* No film ID is passed, so the DNG carries no XMP `dc:identifier`.
+* The source frames are never deleted, and an existing file is never
+  overwritten.
+* The module waits for trichrome. A full-resolution merge takes some seconds.
+
 ## License
 
 GNU Lesser General Public License, version 2.1 or later. See [LICENSE](LICENSE).
