@@ -594,7 +594,7 @@ local function show_entry(entry)
   end
 
 -- fill the combobox with the current export presets
-local function refresh_entries()
+local function fill_entries()
   save_widgets()
   if load_presets() then prune_settings() end
   local selected = current_entry
@@ -607,6 +607,30 @@ local function refresh_entries()
     end
   entry_combo.value = index
   show_entry(entry_combo.value)
+  end
+
+-- every combobox access goes through darktable's gtk_wrap, which releases the
+-- Lua lock while GTK runs it, so another callback (view_enter fires more than
+-- once at startup) can start a second fill in the middle of this one.  Two
+-- fills editing the same combobox index past its end ("Invalid index for
+-- combobox") or append nil.  So a refresh asked for during a fill is not run
+-- alongside it but makes the running one go round again.
+local refreshing, refresh_wanted = false, false
+
+local function refresh_entries()
+  if refreshing then
+    refresh_wanted = true
+    return
+    end
+  refreshing = true
+  repeat
+    refresh_wanted = false
+    local ok, err = pcall(fill_entries)
+    if not ok then
+      dt.print_error(MODULE_NAME .. ": refreshing the presets failed: " .. tostring(err))
+      end
+  until not refresh_wanted
+  refreshing = false
   end
 
 -- changed_callback also fires, late, for refresh_entries' own changes; by
