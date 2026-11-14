@@ -847,6 +847,152 @@ Restart darktable. **trichrome merge** appears in the lighttable right panel.
   overwritten.
 * The module waits for trichrome. A full-resolution merge takes some seconds.
 
+## Patching darktable's bundled string.lua
+
+This is not a module. It's a fix to a helper file that ships inside darktable,
+and it's needed by darktable's own `rename_images` script and any other script
+that uses darktable's variable substitution. The modules in this repository
+don't need it for their defaults: `trichrome_merge` handles a missing
+`version_name` and pads `$(IMAGE.ID.NEXT[n])` itself. A `trichrome_merge`
+pattern that uses `$(IMAGE.ID[n])` still needs the patch.
+
+As of darktable 5.6.2, the bundled `lib/dtutils/string.lua` has two problems:
+
+- **Variable substitution fails if the *version name* metadata field has been
+  removed.** `build_substitute_list` reads `image.version_name` for every
+  image. When that field isn't configured, reading it raises an error rather
+  than returning nothing. `rename_images` then renames nothing and leaves its
+  "renaming images" progress bar running until darktable is restarted. The
+  field can't be re-added in preferences → metadata, because the tag picker
+  doesn't list darktable's own `Xmp.darktable.*` tags. Fixed in
+  [lua-scripts#722](https://github.com/darktable-org/lua-scripts/pull/722)
+  (open).
+- **`$(IMAGE.ID[n])` and `$(IMAGE.ID.NEXT[n])` aren't zero-padded.** Fixed in
+  [lua-scripts#717](https://github.com/darktable-org/lua-scripts/pull/717)
+  (merged, but not yet in a darktable release).
+
+Once a darktable release includes both pull requests, this patch is no longer
+needed.
+
+### Where the file is
+
+| OS      | Path |
+|---------|------|
+| macOS   | `/Applications/darktable.app/Contents/Resources/share/darktable/lua-scripts/lib/dtutils/string.lua` |
+| Linux   | `/usr/share/darktable/lua-scripts/lib/dtutils/string.lua` (or under `/usr/local` or `/opt`, depending on the install) |
+| Windows | `C:\Program Files\darktable\share\darktable\lua-scripts\lib\dtutils\string.lua` |
+
+A darktable upgrade replaces the file. Check it after every upgrade, and
+re-apply the patch if the release doesn't include the fixes.
+
+### Applying the patch
+
+1. Quit darktable.
+2. Back up the file, for example on macOS:
+
+   ```bash
+   F=/Applications/darktable.app/Contents/Resources/share/darktable/lua-scripts/lib/dtutils/string.lua
+   cp -p "$F" ~/string.lua.orig
+   ```
+
+3. Open the file in a text editor and make the three edits below. Line numbers
+   are from darktable 5.6.2 and may drift in other releases; search for the
+   quoted text instead.
+
+   **a. Guard `version_name`** (in `build_substitute_list`, around line 799).
+   Find this line:
+
+   ```lua
+     local version_multi = #image:get_group_members() > 1 and image.duplicate_index or ""
+   ```
+
+   and add after it:
+
+   ```lua
+
+     -- version_name only exists on the image when the version name metadata
+     -- field is configured; reading an unregistered field raises an error
+     local ok, version_name = pcall(function() return image.version_name end)
+     if not ok or not version_name then
+       version_name = ""
+     end
+   ```
+
+   A few lines further down, in the `replacements` table, replace
+
+   ```lua
+                           image.version_name and image.version_name or "", -- VERSION.NAME
+   ```
+
+   with
+
+   ```lua
+                           version_name,                          -- VERSION.NAME
+   ```
+
+   **b. Pad image IDs** (in `treat`, around line 1068). Find the
+   `ROLL.NAME%[` branch:
+
+   ```lua
+     elseif string.match(var_string, "ROLL.NAME%[") then
+       ret_val = substitutes[var_string]
+       if not ret_val then ret_val = "" end
+       log.msg(log.info, "ret_val is " .. ret_val)
+   ```
+
+   and add a new branch directly after it, before
+   `elseif string.match(var_string, "SEQUENCE%[") then`:
+
+   ```lua
+
+     elseif (var == "IMAGE.ID" or var == "IMAGE.ID.NEXT") and string.match(var_string, "%[%d+%]$") then
+       local width = string.match(var_string, "%[(%d+)%]$")
+       local pat = "%0" .. width .. "d"
+       substitutes[var_string] = string.format(pat, substitutes[var])
+       ret_val = substitutes[var_string]
+   ```
+
+   **c. Document the padding in the tooltip** (optional, in
+   `get_substitution_tooltip`, around line 935). After the
+   `_("$(IMAGE.ID) - image ID"),` line add
+
+   ```lua
+             _("$(IMAGE.ID[n]) - image ID, zero-padded to n digits"),
+   ```
+
+   and after the `_("$(IMAGE.ID.NEXT) - next image ID to be assigned on import"),`
+   line add
+
+   ```lua
+             _("$(IMAGE.ID.NEXT[n]) - next image ID to be assigned on import, zero-padded to n digits"),
+   ```
+
+4. Check the syntax, if `luac` is installed:
+
+   ```bash
+   luac -p "$F"
+   ```
+
+5. Start darktable and run a rename. A pattern ending in `-$(IMAGE.ID[6])`
+   should produce names like `20250614-153000-004211.ext`.
+
+If darktable misbehaves, quit it and restore the backup with
+`cp -p ~/string.lua.orig "$F"`.
+
+### Notes
+
+- On macOS, editing a file inside the app bundle breaks its code signature.
+  darktable 5.6 still launches normally. If macOS ever refuses to open it,
+  restore the original file.
+- Writing to the app bundle or `/usr/share` may need `sudo`, depending on who
+  owns the install.
+- Instead of editing by hand, you can replace the whole file with the patched
+  copy from the
+  [`version_name_optional` branch](https://github.com/paulglover/lua-scripts/blob/version_name_optional/lib/dtutils/string.lua).
+  It carries both fixes. Diff it against the installed file first: it tracks
+  upstream `master`, which may contain other changes not in your darktable
+  release. For darktable 5.6.2 the two fixes were the only differences.
+
 ## License
 
 GNU Lesser General Public License, version 2.1 or later. See [LICENSE](LICENSE).
